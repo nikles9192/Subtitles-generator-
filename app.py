@@ -5,76 +5,58 @@ from transformers import pipeline
 import datetime
 import tempfile
 import os
-import math # For math.ceil
+import math
 
 # --- 1. Core Transcription and Formatting Functions ---
 
 def format_timestamp(seconds: float) -> str:
     """Converts seconds to SRT timestamp format (HH:MM:SS,ms)."""
     if seconds is None:
-        return "00:00:00,000" # Should ideally not happen with "chunk" timestamps
+        return "00:00:00,000"
     delta = datetime.timedelta(seconds=seconds)
     hours, remainder = divmod(delta.seconds, 3600)
     minutes, seconds_part = divmod(remainder, 60)
     milliseconds = int(delta.microseconds / 1000)
     return f"{hours:02}:{minutes:02}:{seconds_part:02},{milliseconds:03}"
 
-def _split_long_caption(text: str, start_time: float, end_time: float, max_duration: int, max_chars: int):
+# This is the new, more robust function for splitting captions.
+def _create_caption_segments(words_with_timestamps, max_chars):
     """
-    Splits a single long caption text into multiple smaller captions based on
-    max_duration and max_chars, interpolating timestamps.
-    Returns a list of (start, end, text) tuples.
+    Groups words into smaller caption segments based on max_chars.
+    Returns a list of (start_time, end_time, text) tuples.
     """
-    captions = []
-    current_duration = end_time - start_time
+    segments = []
+    if not words_with_timestamps:
+        return segments
 
-    # Determine how many sub-chunks are needed based on duration and character count
-    num_parts_by_duration = math.ceil(current_duration / max_duration) if max_duration > 0 else 1
-    num_parts_by_chars = math.ceil(len(text) / max_chars) if max_chars > 0 else 1
+    current_segment_text = ""
+    segment_start_time = words_with_timestamps[0]['start']
 
-    num_parts = max(num_parts_by_duration, num_parts_by_chars, 1) # Ensure at least 1 part
+    for i, word_data in enumerate(words_with_timestamps):
+        word = word_data['word']
 
-    if num_parts <= 1:
-        # No splitting needed if it already fits the criteria
-        captions.append((start_time, end_time, text.strip()))
-        return captions
+        # If adding the next word exceeds the character limit
+        if len(current_segment_text) + len(word) + 1 > max_chars and current_segment_text:
+            # Finalize the current segment
+            segment_end_time = words_with_timestamps[i-1]['end']
+            segments.append((segment_start_time, segment_end_time, current_segment_text.strip()))
 
-    # Calculate approximate duration and character length for each part
-    approx_part_duration = current_duration / num_parts
-    approx_chars_per_part = len(text) / num_parts
-
-    start_idx = 0
-    for i in range(num_parts):
-        part_start_time = start_time + i * approx_part_duration
-        part_end_time = start_time + (i + 1) * approx_part_duration
-
-        # Determine end index for text, trying to break at a space
-        target_end_idx = min(len(text), math.ceil((i + 1) * approx_chars_per_part))
-
-        # Find the last space before the target_end_idx for a clean break
-        split_idx = text.rfind(' ', start_idx, target_end_idx)
-        if split_idx == -1 or split_idx == start_idx: # No space or space is at the very beginning of this part
-            # If no good break, just cut at target_end_idx or end of text
-            split_idx = target_end_idx
-
-        # Ensure we don't go past the end of the text
-        if i == num_parts - 1: # Last part, take remaining text
-            sub_text = text[start_idx:].strip()
-            part_end_time = end_time # Ensure last part ends at original end_time
+            # Start a new segment
+            current_segment_text = word
+            segment_start_time = word_data['start']
         else:
-            sub_text = text[start_idx:split_idx].strip()
-            # Advance start_idx for the next part, skipping the space we just split on
-            start_idx = split_idx + 1 if split_idx < len(text) else len(text)
+            # Add word to the current segment
+            if current_segment_text:
+                current_segment_text += " " + word
+            else:
+                current_segment_text = word
 
-        if sub_text: # Only add if there's actual text
-            captions.append((part_start_time, part_end_time, sub_text))
+    # Add the last segment
+    if current_segment_text:
+        segment_end_time = words_with_timestamps[-1]['end']
+        segments.append((segment_start_time, segment_end_time, current_segment_text.strip()))
 
-    # Small adjustment for the very last caption end time to match original
-    if captions:
-        captions[-1] = (captions[-1][0], end_time, captions[-1][2])
-
-    return captions
-
+    return segments
 
 # Use a cache for the pipeline to avoid reloading the model on every run
 @st.cache_resource
@@ -82,21 +64,21 @@ def load_transcription_pipeline(model_name):
     """Loads the Hugging Face pipeline and caches it."""
     st.info(f"Loading model '{model_name}'... This may take a moment.")
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    # IMPORTANT: We now request "word" timestamps to guide the splitting process accurately.
     transcriber = pipeline(
         "automatic-speech-recognition",
         model=model_name,
         device=device,
-        chunk_length_s=30, # Max audio segment passed to model at once
-        stride_length_s=5, # Overlap between chunks for better context
-        return_timestamps="chunk" # Get phrase-level timestamps from Whisper
+        chunk_length_s=30,
+        return_timestamps="word" # We need word-level timestamps for smart splitting
     )
     st.success(f"Model '{model_name}' loaded successfully!")
     return transcriber
 
-def transcribe_audio(transcriber, audio_path: str, max_duration: int, max_chars: int) -> str:
+def transcribe_audio(transcriber, audio_path: str, max_chars: int) -> str:
     """
     Transcribes the audio file and generates SRT content, applying post-processing
-    to split long captions.
+    to create well-formatted captions.
     Returns the SRT content as a string.
     """
     try:
@@ -107,46 +89,41 @@ def transcribe_audio(transcriber, audio_path: str, max_duration: int, max_chars:
 
     st.info("Transcribing audio... Please wait.")
     transcription = transcriber(audio_input)
-    st.info("Transcription complete. Formatting SRT and splitting long captions...")
+    # For debugging: uncomment the next line to see the raw output from Whisper
+    # st.write(transcription)
 
-    srt_content = ""
-    caption_index = 1
+    st.info("Transcription complete. Formatting SRT...")
 
-    if "chunks" not in transcription:
-        st.warning("The model did not return timestamped chunks. Cannot generate SRT.")
+    if "chunks" not in transcription or not transcription["chunks"]:
+        st.warning("The model did not produce any text. The audio might be silent or too short.")
         return ""
 
-    # Process each original chunk, potentially splitting it
-    final_captions = []
+    # Extract all words with their timestamps
+    all_words = []
     for chunk in transcription["chunks"]:
-        start_time_original, end_time_original = chunk['timestamp']
-        text_original = chunk['text'].strip()
+        # Whisper's output format gives each word as a chunk when using return_timestamps="word"
+        if chunk['timestamp'] and chunk['text']:
+             all_words.append({
+                "word": chunk['text'].strip(),
+                "start": chunk['timestamp'][0],
+                "end": chunk['timestamp'][1]
+            })
 
-        if start_time_original is None or end_time_original is None or not text_original:
-            continue
+    if not all_words:
+        st.warning("Could not extract any words with timestamps from the transcription.")
+        return ""
 
-        # Split the original chunk if it's too long
-        split_results = _split_long_caption(
-            text_original,
-            start_time_original,
-            end_time_original,
-            max_duration,
-            max_chars
-        )
-        final_captions.extend(split_results)
+    # Group words into caption segments based on character limit
+    caption_segments = _create_caption_segments(all_words, max_chars)
 
-    # Sort captions by start time (important if splitting causes overlaps or out-of-order)
-    final_captions.sort(key=lambda x: x[0])
-
-    # Format the final list of (start, end, text) tuples into SRT
-    for start_time, end_time, text in final_captions:
-        formatted_start = format_timestamp(start_time)
-        formatted_end = format_timestamp(end_time)
-
-        srt_content += f"{caption_index}\n"
+    # Format the final list of segments into SRT
+    srt_content = ""
+    for i, (start, end, text) in enumerate(caption_segments, 1):
+        formatted_start = format_timestamp(start)
+        formatted_end = format_timestamp(end)
+        srt_content += f"{i}\n"
         srt_content += f"{formatted_start} --> {formatted_end}\n"
         srt_content += f"{text}\n\n"
-        caption_index += 1
 
     return srt_content
 
@@ -156,7 +133,7 @@ st.set_page_config(page_title="Audio to SRT Caption Generator", layout="centered
 
 st.title("🎧 Audio to SRT Caption Generator")
 st.markdown("""
-Upload an audio file, and this app will generate synchronized captions in the SRT format using OpenAI's Whisper model.
+Upload an audio file. This app will generate synchronized captions using OpenAI's Whisper model and format them for readability.
 """)
 
 # Sidebar for model selection and options
@@ -170,27 +147,21 @@ model_options = [
 selected_model = st.sidebar.selectbox(
     "Choose a Whisper Model",
     options=model_options,
-    index=1, # Default to 'base'
-    help="Larger models are more accurate but slower and require more memory. 'base' is a good balance."
+    index=1,
+    help="Larger models are more accurate but slower. 'base' is a good balance."
 )
 
 st.sidebar.markdown("---")
 st.sidebar.header("Caption Formatting")
-max_caption_duration = st.sidebar.slider(
-    "Max Caption Duration (seconds)",
-    min_value=3, max_value=15, value=7, step=1,
-    help="Maximum duration for a single caption entry."
-)
 max_chars_per_caption = st.sidebar.slider(
-    "Max Characters per Caption",
-    min_value=20, max_value=100, value=50, step=5,
-    help="Maximum characters in a single caption line for readability."
+    "Max Characters per Caption Line",
+    min_value=20, max_value=100, value=42, step=1,
+    help="Recommended for subtitles is around 42 characters per line."
 )
 
 # Load the selected model
 transcriber = load_transcription_pipeline(selected_model)
 
-# File uploader
 st.header("1. Upload your Audio File")
 uploaded_file = st.file_uploader(
     "Choose a WAV, MP3, M4A, or OGG file",
@@ -203,20 +174,16 @@ if uploaded_file is not None:
     st.header("2. Generate Captions")
     if st.button("✨ Generate SRT Captions"):
         with st.spinner("Processing... This might take a while depending on audio length and model size."):
-            # Save uploaded file to a temporary location to be read by librosa
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmpfile:
                 tmpfile.write(uploaded_file.getvalue())
                 temp_audio_path = tmpfile.name
 
-            # Perform transcription with user-defined parameters
+            # Perform transcription with the character limit
             srt_result = transcribe_audio(
                 transcriber,
                 temp_audio_path,
-                max_duration=max_caption_duration,
                 max_chars=max_chars_per_caption
             )
-
-            # Clean up the temporary file
             os.remove(temp_audio_path)
 
             if srt_result:
@@ -224,9 +191,8 @@ if uploaded_file is not None:
                 st.session_state['file_name'] = f"{os.path.splitext(uploaded_file.name)[0]}.srt"
                 st.success("Captions generated successfully!")
             else:
-                st.error("Failed to generate captions. Please try another file or model.")
+                st.error("Failed to generate captions. Please check if the audio contains clear speech.")
 
-# Display results and download button if available in session state
 if 'srt_result' in st.session_state and st.session_state['srt_result']:
     st.header("3. View and Download Captions")
     st.text_area(
