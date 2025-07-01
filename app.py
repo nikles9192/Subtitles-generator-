@@ -10,6 +10,9 @@ import os
 
 def format_timestamp(seconds: float) -> str:
     """Converts seconds to SRT timestamp format (HH:MM:SS,ms)."""
+    # Handle potential None values gracefully
+    if seconds is None:
+        return "00:00:00,000"
     delta = datetime.timedelta(seconds=seconds)
     hours, remainder = divmod(delta.seconds, 3600)
     minutes, seconds_part = divmod(remainder, 60)
@@ -22,13 +25,17 @@ def load_transcription_pipeline(model_name):
     """Loads the Hugging Face pipeline and caches it."""
     st.info(f"Loading model '{model_name}'... This may take a moment.")
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    # ==================================================================
+    # THE FIX IS HERE: Changed "word" to "chunk" for more stability
+    # ==================================================================
     transcriber = pipeline(
         "automatic-speech-recognition",
         model=model_name,
         device=device,
         chunk_length_s=30,
         stride_length_s=5,
-        return_timestamps="word"
+        return_timestamps="chunk" # Use "chunk" instead of "word"
     )
     st.success(f"Model '{model_name}' loaded successfully!")
     return transcriber
@@ -39,18 +46,16 @@ def transcribe_audio(transcriber, audio_path: str) -> str:
     Returns the SRT content as a string.
     """
     try:
-        # Load audio file at the required 16kHz sample rate
         audio_input, sample_rate = librosa.load(audio_path, sr=16000)
     except Exception as e:
         st.error(f"Error loading audio file: {e}")
         return ""
 
-    # Perform transcription
     st.info("Transcribing audio... Please wait.")
+    # The transcriber will now return sentence/phrase level chunks
     transcription = transcriber(audio_input)
     st.info("Transcription complete. Formatting SRT...")
 
-    # Format the output into SRT format
     srt_content = ""
     caption_index = 1
 
@@ -58,12 +63,18 @@ def transcribe_audio(transcriber, audio_path: str) -> str:
         st.warning("The model did not return timestamped chunks. Cannot generate SRT.")
         return ""
 
+    # The loop works exactly the same, but each "chunk" is now a phrase
     for chunk in transcription["chunks"]:
-        start_time_str = format_timestamp(chunk['timestamp'][0])
-        end_time_str = format_timestamp(chunk['timestamp'][1])
+        start_time, end_time = chunk['timestamp']
+
+        # Added safety check for None timestamps, just in case
+        if start_time is None or end_time is None:
+            continue
+
+        start_time_str = format_timestamp(start_time)
+        end_time_str = format_timestamp(end_time)
         text = chunk['text'].strip()
 
-        # Skip empty text chunks
         if not text:
             continue
 
@@ -76,16 +87,13 @@ def transcribe_audio(transcriber, audio_path: str) -> str:
 
 # --- 2. Streamlit User Interface ---
 
-# Set page configuration
-st.set_page_config(page_title="Audio to SRT Caption Generator", layout="centered", page_icon="��")
+st.set_page_config(page_title="Audio to SRT Caption Generator", layout="centered", page_icon="🎧")
 
-# Title and description
-st.title("�� Audio to SRT Caption Generator")
+st.title("🎧 Audio to SRT Caption Generator")
 st.markdown("""
 Upload an audio file, and this app will generate synchronized captions in the SRT format using OpenAI's Whisper model.
 """)
 
-# Sidebar for model selection and options
 st.sidebar.header("Settings")
 model_options = [
     "openai/whisper-tiny",
@@ -96,14 +104,12 @@ model_options = [
 selected_model = st.sidebar.selectbox(
     "Choose a Whisper Model",
     options=model_options,
-    index=1, # Default to 'base'
-    help="Larger models are more accurate but slower and require more memory. 'base' is a good balance."
+    index=1,
+    help="Larger models are more accurate but slower. 'base' is a good balance."
 )
 
-# Load the selected model
 transcriber = load_transcription_pipeline(selected_model)
 
-# File uploader
 st.header("1. Upload your Audio File")
 uploaded_file = st.file_uploader(
     "Choose a WAV, MP3, M4A, or OGG file",
@@ -116,15 +122,11 @@ if uploaded_file is not None:
     st.header("2. Generate Captions")
     if st.button("✨ Generate SRT Captions"):
         with st.spinner("Processing... This might take a while depending on audio length and model size."):
-            # Save uploaded file to a temporary location to be read by librosa
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmpfile:
                 tmpfile.write(uploaded_file.getvalue())
                 temp_audio_path = tmpfile.name
 
-            # Perform transcription
             srt_result = transcribe_audio(transcriber, temp_audio_path)
-
-            # Clean up the temporary file
             os.remove(temp_audio_path)
 
             if srt_result:
@@ -134,7 +136,6 @@ if uploaded_file is not None:
             else:
                 st.error("Failed to generate captions. Please try another file or model.")
 
-# Display results and download button if available in session state
 if 'srt_result' in st.session_state and st.session_state['srt_result']:
     st.header("3. View and Download Captions")
     st.text_area(
@@ -144,7 +145,7 @@ if 'srt_result' in st.session_state and st.session_state['srt_result']:
     )
 
     st.download_button(
-        label="�� Download .SRT File",
+        label="📥 Download .SRT File",
         data=st.session_state['srt_result'],
         file_name=st.session_state['file_name'],
         mime='text/plain'
