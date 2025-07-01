@@ -10,145 +10,145 @@ import os
 
 def format_timestamp(seconds: float) -> str:
     """Converts seconds to SRT timestamp format (HH:MM:SS,ms)."""
-        delta = datetime.timedelta(seconds=seconds)
-            hours, remainder = divmod(delta.seconds, 3600)
-                minutes, seconds_part = divmod(remainder, 60)
-                    milliseconds = int(delta.microseconds / 1000)
-                        return f"{hours:02}:{minutes:02}:{seconds_part:02},{milliseconds:03}"
+    delta = datetime.timedelta(seconds=seconds)
+    hours, remainder = divmod(delta.seconds, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    milliseconds = int(delta.microseconds / 1000)
+    return f"{hours:02}:{minutes:02}:{seconds_part:02},{milliseconds:03}"
 
-                        # Use a cache for the pipeline to avoid reloading the model on every run
-                        @st.cache_resource
-                        def load_transcription_pipeline(model_name):
-                            """Loads the Hugging Face pipeline and caches it."""
-                                st.info(f"Loading model '{model_name}'... This may take a moment.")
-                                    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-                                        transcriber = pipeline(
-                                                "automatic-speech-recognition",
-                                                        model=model_name,
-                                                                device=device,
-                                                                        chunk_length_s=30,
-                                                                                stride_length_s=5,
-                                                                                        return_timestamps="word"
-                                                                                            )
-                                                                                                st.success(f"Model '{model_name}' loaded successfully!")
-                                                                                                    return transcriber
+# Use a cache for the pipeline to avoid reloading the model on every run
+@st.cache_resource
+def load_transcription_pipeline(model_name):
+    """Loads the Hugging Face pipeline and caches it."""
+    st.info(f"Loading model '{model_name}'... This may take a moment.")
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    transcriber = pipeline(
+        "automatic-speech-recognition",
+        model=model_name,
+        device=device,
+        chunk_length_s=30,
+        stride_length_s=5,
+        return_timestamps="word"
+    )
+    st.success(f"Model '{model_name}' loaded successfully!")
+    return transcriber
 
-                                                                                                    def transcribe_audio(transcriber, audio_path: str) -> str:
-                                                                                                        """
-                                                                                                            Transcribes the audio file and generates SRT content.
-                                                                                                                Returns the SRT content as a string.
-                                                                                                                    """
-                                                                                                                        try:
-                                                                                                                                # Load audio file at the required 16kHz sample rate
-                                                                                                                                        audio_input, sample_rate = librosa.load(audio_path, sr=16000)
-                                                                                                                                            except Exception as e:
-                                                                                                                                                    st.error(f"Error loading audio file: {e}")
-                                                                                                                                                            return ""
+def transcribe_audio(transcriber, audio_path: str) -> str:
+    """
+    Transcribes the audio file and generates SRT content.
+    Returns the SRT content as a string.
+    """
+    try:
+        # Load audio file at the required 16kHz sample rate
+        audio_input, sample_rate = librosa.load(audio_path, sr=16000)
+    except Exception as e:
+        st.error(f"Error loading audio file: {e}")
+        return ""
 
-                                                                                                                                                                # Perform transcription
-                                                                                                                                                                    st.info("Transcribing audio... Please wait.")
-                                                                                                                                                                        transcription = transcriber(audio_input)
-                                                                                                                                                                            st.info("Transcription complete. Formatting SRT...")
+    # Perform transcription
+    st.info("Transcribing audio... Please wait.")
+    transcription = transcriber(audio_input)
+    st.info("Transcription complete. Formatting SRT...")
 
-                                                                                                                                                                                # Format the output into SRT format
-                                                                                                                                                                                    srt_content = ""
-                                                                                                                                                                                        caption_index = 1
+    # Format the output into SRT format
+    srt_content = ""
+    caption_index = 1
 
-                                                                                                                                                                                            if "chunks" not in transcription:
-                                                                                                                                                                                                    st.warning("The model did not return timestamped chunks. Cannot generate SRT.")
-                                                                                                                                                                                                            return ""
+    if "chunks" not in transcription:
+        st.warning("The model did not return timestamped chunks. Cannot generate SRT.")
+        return ""
 
-                                                                                                                                                                                                                for chunk in transcription["chunks"]:
-                                                                                                                                                                                                                        start_time_str = format_timestamp(chunk['timestamp'][0])
-                                                                                                                                                                                                                                end_time_str = format_timestamp(chunk['timestamp'][1])
-                                                                                                                                                                                                                                        text = chunk['text'].strip()
+    for chunk in transcription["chunks"]:
+        start_time_str = format_timestamp(chunk['timestamp'][0])
+        end_time_str = format_timestamp(chunk['timestamp'][1])
+        text = chunk['text'].strip()
 
-                                                                                                                                                                                                                                                # Skip empty text chunks
-                                                                                                                                                                                                                                                        if not text:
-                                                                                                                                                                                                                                                                    continue
+        # Skip empty text chunks
+        if not text:
+            continue
 
-                                                                                                                                                                                                                                                                            srt_content += f"{caption_index}\n"
-                                                                                                                                                                                                                                                                                    srt_content += f"{start_time_str} --> {end_time_str}\n"
-                                                                                                                                                                                                                                                                                            srt_content += f"{text}\n\n"
-                                                                                                                                                                                                                                                                                                    caption_index += 1
+        srt_content += f"{caption_index}\n"
+        srt_content += f"{start_time_str} --> {end_time_str}\n"
+        srt_content += f"{text}\n\n"
+        caption_index += 1
 
-                                                                                                                                                                                                                                                                                                        return srt_content
+    return srt_content
 
-                                                                                                                                                                                                                                                                                                        # --- 2. Streamlit User Interface ---
+# --- 2. Streamlit User Interface ---
 
-                                                                                                                                                                                                                                                                                                        # Set page configuration
-                                                                                                                                                                                                                                                                                                        st.set_page_config(page_title="Audio to SRT Caption Generator", layout="centered", page_icon="��")
+# Set page configuration
+st.set_page_config(page_title="Audio to SRT Caption Generator", layout="centered", page_icon="��")
 
-                                                                                                                                                                                                                                                                                                        # Title and description
-                                                                                                                                                                                                                                                                                                        st.title("�� Audio to SRT Caption Generator")
-                                                                                                                                                                                                                                                                                                        st.markdown("""
-                                                                                                                                                                                                                                                                                                        Upload an audio file, and this app will generate synchronized captions in the SRT format using OpenAI's Whisper model.
-                                                                                                                                                                                                                                                                                                        """)
+# Title and description
+st.title("�� Audio to SRT Caption Generator")
+st.markdown("""
+Upload an audio file, and this app will generate synchronized captions in the SRT format using OpenAI's Whisper model.
+""")
 
-                                                                                                                                                                                                                                                                                                        # Sidebar for model selection and options
-                                                                                                                                                                                                                                                                                                        st.sidebar.header("Settings")
-                                                                                                                                                                                                                                                                                                        model_options = [
-                                                                                                                                                                                                                                                                                                            "openai/whisper-tiny",
-                                                                                                                                                                                                                                                                                                                "openai/whisper-base",
-                                                                                                                                                                                                                                                                                                                    "openai/whisper-small",
-                                                                                                                                                                                                                                                                                                                        "openai/whisper-medium",
-                                                                                                                                                                                                                                                                                                                        ]
-                                                                                                                                                                                                                                                                                                                        selected_model = st.sidebar.selectbox(
-                                                                                                                                                                                                                                                                                                                            "Choose a Whisper Model",
-                                                                                                                                                                                                                                                                                                                                options=model_options,
-                                                                                                                                                                                                                                                                                                                                    index=1, # Default to 'base'
-                                                                                                                                                                                                                                                                                                                                        help="Larger models are more accurate but slower and require more memory. 'base' is a good balance."
-                                                                                                                                                                                                                                                                                                                                        )
+# Sidebar for model selection and options
+st.sidebar.header("Settings")
+model_options = [
+    "openai/whisper-tiny",
+    "openai/whisper-base",
+    "openai/whisper-small",
+    "openai/whisper-medium",
+]
+selected_model = st.sidebar.selectbox(
+    "Choose a Whisper Model",
+    options=model_options,
+    index=1, # Default to 'base'
+    help="Larger models are more accurate but slower and require more memory. 'base' is a good balance."
+)
 
-                                                                                                                                                                                                                                                                                                                                        # Load the selected model
-                                                                                                                                                                                                                                                                                                                                        transcriber = load_transcription_pipeline(selected_model)
+# Load the selected model
+transcriber = load_transcription_pipeline(selected_model)
 
-                                                                                                                                                                                                                                                                                                                                        # File uploader
-                                                                                                                                                                                                                                                                                                                                        st.header("1. Upload your Audio File")
-                                                                                                                                                                                                                                                                                                                                        uploaded_file = st.file_uploader(
-                                                                                                                                                                                                                                                                                                                                            "Choose a WAV, MP3, M4A, or OGG file",
-                                                                                                                                                                                                                                                                                                                                                type=['wav', 'mp3', 'm4a', 'ogg']
-                                                                                                                                                                                                                                                                                                                                                )
+# File uploader
+st.header("1. Upload your Audio File")
+uploaded_file = st.file_uploader(
+    "Choose a WAV, MP3, M4A, or OGG file",
+    type=['wav', 'mp3', 'm4a', 'ogg']
+)
 
-                                                                                                                                                                                                                                                                                                                                                if uploaded_file is not None:
-                                                                                                                                                                                                                                                                                                                                                    st.audio(uploaded_file, format='audio/ogg')
+if uploaded_file is not None:
+    st.audio(uploaded_file, format='audio/ogg')
 
-                                                                                                                                                                                                                                                                                                                                                        st.header("2. Generate Captions")
-                                                                                                                                                                                                                                                                                                                                                            if st.button("✨ Generate SRT Captions"):
-                                                                                                                                                                                                                                                                                                                                                                    with st.spinner("Processing... This might take a while depending on audio length and model size."):
-                                                                                                                                                                                                                                                                                                                                                                                # Save uploaded file to a temporary location to be read by librosa
-                                                                                                                                                                                                                                                                                                                                                                                            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmpfile:
-                                                                                                                                                                                                                                                                                                                                                                                                            tmpfile.write(uploaded_file.getvalue())
-                                                                                                                                                                                                                                                                                                                                                                                                                            temp_audio_path = tmpfile.name
+    st.header("2. Generate Captions")
+    if st.button("✨ Generate SRT Captions"):
+        with st.spinner("Processing... This might take a while depending on audio length and model size."):
+            # Save uploaded file to a temporary location to be read by librosa
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmpfile:
+                tmpfile.write(uploaded_file.getvalue())
+                temp_audio_path = tmpfile.name
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                        # Perform transcription
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    srt_result = transcribe_audio(transcriber, temp_audio_path)
+            # Perform transcription
+            srt_result = transcribe_audio(transcriber, temp_audio_path)
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                # Clean up the temporary file
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                            os.remove(temp_audio_path)
+            # Clean up the temporary file
+            os.remove(temp_audio_path)
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        if srt_result:
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        st.session_state['srt_result'] = srt_result
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        st.session_state['file_name'] = f"{os.path.splitext(uploaded_file.name)[0]}.srt"
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        st.success("Captions generated successfully!")
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    else:
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    st.error("Failed to generate captions. Please try another file or model.")
+            if srt_result:
+                st.session_state['srt_result'] = srt_result
+                st.session_state['file_name'] = f"{os.path.splitext(uploaded_file.name)[0]}.srt"
+                st.success("Captions generated successfully!")
+            else:
+                st.error("Failed to generate captions. Please try another file or model.")
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    # Display results and download button if available in session state
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    if 'srt_result' in st.session_state and st.session_state['srt_result']:
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        st.header("3. View and Download Captions")
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            st.text_area(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    label="Generated SRT Content",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            value=st.session_state['srt_result'],
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    height=300
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        )
+# Display results and download button if available in session state
+if 'srt_result' in st.session_state and st.session_state['srt_result']:
+    st.header("3. View and Download Captions")
+    st.text_area(
+        label="Generated SRT Content",
+        value=st.session_state['srt_result'],
+        height=300
+    )
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            st.download_button(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    label="�� Download .SRT File",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            data=st.session_state['srt_result'],
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    file_name=st.session_state['file_name'],
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            mime='text/plain'
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                )
+    st.download_button(
+        label="�� Download .SRT File",
+        data=st.session_state['srt_result'],
+        file_name=st.session_state['file_name'],
+        mime='text/plain'
+    )
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                st.sidebar.markdown("---")
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                st.sidebar.markdown("Built with ❤️ using [Streamlit](https://streamlit.io) and [Hugging Face](https://huggingface.co/).")
+st.sidebar.markdown("---")
+st.sidebar.markdown("Built with ❤️ using [Streamlit](https://streamlit.io) and [Hugging Face](https://huggingface.co/).")
