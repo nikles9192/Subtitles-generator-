@@ -22,39 +22,62 @@ def format_timestamp(seconds: float) -> str:
 # This is the new, more robust function for splitting captions.
 def _create_caption_segments(words_with_timestamps, max_chars):
     """
-    Groups words into smaller caption segments based on max_chars.
+    Groups words into smaller caption segments based on max_chars,
+    and attempts to break at sentence-ending punctuation for better readability.
     Returns a list of (start_time, end_time, text) tuples.
     """
     segments = []
     if not words_with_timestamps:
         return segments
 
+    current_words_data = []
     current_segment_text = ""
+    # Initialize start time with the first word's start time
     segment_start_time = words_with_timestamps[0]['start']
 
     for i, word_data in enumerate(words_with_timestamps):
         word = word_data['word']
 
-        # If adding the next word exceeds the character limit
-        if len(current_segment_text) + len(word) + 1 > max_chars and current_segment_text:
-            # Finalize the current segment
-            segment_end_time = words_with_timestamps[i-1]['end']
-            segments.append((segment_start_time, segment_end_time, current_segment_text.strip()))
+        # Determine the text of the segment if this word were added.
+        # Add a space only if the segment is not empty.
+        text_with_new_word = (current_segment_text + " " + word) if current_segment_text else word
 
-            # Start a new segment
+        # --- SPLITTING LOGIC ---
+
+        # 1. SPLIT IF TEXT GETS TOO LONG
+        if len(text_with_new_word) > max_chars and current_segment_text:
+            # The current segment is full. Finalize it *without* the new word.
+            segment_end_time = current_words_data[-1]['end']
+            segments.append((segment_start_time, segment_end_time, current_segment_text))
+
+            # Start a new segment with the current word.
+            current_words_data = [word_data]
             current_segment_text = word
             segment_start_time = word_data['start']
-        else:
-            # Add word to the current segment
-            if current_segment_text:
-                current_segment_text += " " + word
-            else:
-                current_segment_text = word
 
-    # Add the last segment
+        # 2. SPLIT AT THE END OF A SENTENCE
+        elif word.endswith(('.', '?', '!')):
+            # This word ends a sentence, so finalize the segment *with* this word.
+            segment_end_time = word_data['end']
+            segments.append((segment_start_time, segment_end_time, text_with_new_word))
+
+            # Reset for the next segment.
+            current_words_data = []
+            current_segment_text = ""
+            # Set start time for the *next* segment, if there is one.
+            if i + 1 < len(words_with_timestamps):
+                segment_start_time = words_with_timestamps[i+1]['start']
+
+        # 3. NO SPLIT: JUST ADD THE WORD
+        else:
+            current_words_data.append(word_data)
+            current_segment_text = text_with_new_word
+
+    # After the loop, add any remaining text as the final segment.
     if current_segment_text:
-        segment_end_time = words_with_timestamps[-1]['end']
-        segments.append((segment_start_time, segment_end_time, current_segment_text.strip()))
+        # The end time is the end of the last word added.
+        segment_end_time = current_words_data[-1]['end']
+        segments.append((segment_start_time, segment_end_time, current_segment_text))
 
     return segments
 
