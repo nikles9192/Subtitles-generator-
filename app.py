@@ -163,9 +163,15 @@ Upload an audio file. This app will generate synchronized captions using OpenAI'
 st.sidebar.header("Settings")
 model_options = [
     "openai/whisper-tiny",
+    "openai/whisper-tiny.en",
     "openai/whisper-base",
+    "openai/whisper-base.en",
     "openai/whisper-small",
+    "openai/whisper-small.en",
     "openai/whisper-medium",
+    "openai/whisper-medium.en",
+    "openai/whisper-large-v2",
+    "openai/whisper-large-v3",
 ]
 selected_model = st.sidebar.selectbox(
     "Choose a Whisper Model",
