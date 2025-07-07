@@ -1,11 +1,10 @@
 import streamlit as st
-import torch
 import librosa
 from transformers import pipeline
 import datetime
 import tempfile
 import os
-import math
+import torch
 
 # --- 1. Core Transcription and Formatting Functions ---
 
@@ -19,7 +18,6 @@ def format_timestamp(seconds: float) -> str:
     milliseconds = int(delta.microseconds / 1000)
     return f"{hours:02}:{minutes:02}:{seconds_part:02},{milliseconds:03}"
 
-# This is the new, more robust function for splitting captions.
 def _create_caption_segments(words_with_timestamps, max_chars):
     """
     Groups words into smaller caption segments based on max_chars,
@@ -81,39 +79,30 @@ def _create_caption_segments(words_with_timestamps, max_chars):
 
     return segments
 
-# Use a cache for the pipeline to avoid reloading the model on every run
-@st.cache_resource
-def load_transcription_pipeline(model_name):
-    """Loads the Hugging Face pipeline and caches it."""
-    st.info(f"Loading model '{model_name}'... This may take a moment.")
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    # IMPORTANT: We now request "word" timestamps to guide the splitting process accurately.
-    transcriber = pipeline(
-        "automatic-speech-recognition",
-        model=model_name,
-        device=device,
-        chunk_length_s=30,
-        return_timestamps="word" # We need word-level timestamps for smart splitting
-    )
-    st.success(f"Model '{model_name}' loaded successfully!")
-    return transcriber
-
-def transcribe_audio(transcriber, audio_path: str, max_chars: int) -> str:
+def transcribe_audio(model_name: str, audio_path: str, max_chars: int) -> str:
     """
     Transcribes the audio file and generates SRT content, applying post-processing
     to create well-formatted captions.
     Returns the SRT content as a string.
     """
     try:
-        audio_input, sample_rate = librosa.load(audio_path, sr=16000)
+        st.info("Transcribing audio... Please wait.")
+        pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model_name,
+            torch_dtype=torch.float16,
+            device="cuda:0" if torch.cuda.is_available() else "cpu",
+        )
+        transcription = pipe(
+            audio_path,
+            generate_kwargs={"task": "transcribe"},
+            return_timestamps="word",
+            chunk_length_s=30,
+            batch_size=8,
+        )
     except Exception as e:
-        st.error(f"Error loading audio file: {e}")
+        st.error(f"Error during transcription: {e}")
         return ""
-
-    st.info("Transcribing audio... Please wait.")
-    transcription = transcriber(audio_input)
-    # For debugging: uncomment the next line to see the raw output from Whisper
-    # st.write(transcription)
 
     st.info("Transcription complete. Formatting SRT...")
 
@@ -124,7 +113,6 @@ def transcribe_audio(transcriber, audio_path: str, max_chars: int) -> str:
     # Extract all words with their timestamps
     all_words = []
     for chunk in transcription["chunks"]:
-        # Whisper's output format gives each word as a chunk when using return_timestamps="word"
         if chunk['timestamp'] and chunk['text']:
              all_words.append({
                 "word": chunk['text'].strip(),
@@ -169,9 +157,9 @@ model_options = [
     "openai/whisper-small",
     "openai/whisper-small.en",
     "openai/whisper-medium",
-    "openai/whisper-medium.en",
     "openai/whisper-large-v2",
     "openai/whisper-large-v3",
+    "distil-whisper/distil-large-v2",
 ]
 selected_model = st.sidebar.selectbox(
     "Choose a Whisper Model",
@@ -187,9 +175,6 @@ max_chars_per_caption = st.sidebar.slider(
     min_value=20, max_value=100, value=42, step=1,
     help="Recommended for subtitles is around 42 characters per line."
 )
-
-# Load the selected model
-transcriber = load_transcription_pipeline(selected_model)
 
 st.header("1. Upload your Audio File")
 uploaded_file = st.file_uploader(
@@ -209,7 +194,7 @@ if uploaded_file is not None:
 
             # Perform transcription with the character limit
             srt_result = transcribe_audio(
-                transcriber,
+                selected_model,
                 temp_audio_path,
                 max_chars=max_chars_per_caption
             )
@@ -238,4 +223,4 @@ if 'srt_result' in st.session_state and st.session_state['srt_result']:
     )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("Built with ❤️ using [Streamlit](https://streamlit.io) and [Hugging Face](https://huggingface.co/).")
+st.sidebar.markdown("Built with ❤️ using [Streamlit](https://streamlit.io) and [insanely-fast-whisper](https://github.com/Vaibhavs10/insanely-fast-whisper).")
