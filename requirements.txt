@@ -1,7 +1,5 @@
 streamlit
 librosa
-insanely-fast-whisper
+faster-whisper
 torch
 transformers
-optimum
-accelerate
