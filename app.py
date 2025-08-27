@@ -1,10 +1,9 @@
 import streamlit as st
-import librosa
-from transformers import pipeline
 import datetime
 import tempfile
 import os
 import torch
+from faster_whisper import WhisperModel
 
 # --- 1. Core Transcription and Formatting Functions ---
 
